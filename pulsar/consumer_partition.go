@@ -113,6 +113,7 @@ type partitionConsumerOpts struct {
 	backoffPolicy               internal.BackoffPolicy
 	keySharedPolicy             *KeySharedPolicy
 	schema                      Schema
+	schemaCreator               SchemaCreator
 	decryption                  *MessageDecryptionInfo
 	ackWithResponse             bool
 	maxPendingChunkedMessage    int
@@ -173,7 +174,7 @@ type partitionConsumer struct {
 	compressionProviders sync.Map //map[pb.CompressionType]compression.Provider
 	metrics              *internal.LeveledMetrics
 	decryptor            cryptointernal.Decryptor
-	schemaInfoCache      *schemaInfoCache
+	schemaRegistry       SchemaRegistry
 
 	chunkedMsgCtxMap   *chunkedMsgCtxMap
 	unAckChunksTracker *unAckChunksTracker
@@ -265,17 +266,19 @@ func (a *atomicMessageID) set(msgID *trackingMessageID) {
 }
 
 type schemaInfoCache struct {
-	lock   sync.RWMutex
-	cache  map[string]Schema
-	client *client
-	topic  string
+	lock          sync.RWMutex
+	cache         map[string]Schema
+	client        *client
+	topic         string
+	schemaCreator SchemaCreator
 }
 
-func newSchemaInfoCache(client *client, topic string) *schemaInfoCache {
+func newSchemaInfoCache(client *client, topic string, schemaCreator SchemaCreator) *schemaInfoCache {
 	return &schemaInfoCache{
-		cache:  make(map[string]Schema),
-		client: client,
-		topic:  topic,
+		cache:         make(map[string]Schema),
+		client:        client,
+		topic:         topic,
+		schemaCreator: schemaCreator,
 	}
 }
 
@@ -300,7 +303,7 @@ func (s *schemaInfoCache) Get(schemaVersion []byte) (schema Schema, err error) {
 
 	var properties = internal.ConvertToStringMap(pbSchema.Properties)
 
-	schema, err = NewSchema(SchemaType(*pbSchema.Type), pbSchema.SchemaData, properties)
+	schema, err = s.schemaCreator(SchemaType(*pbSchema.Type), pbSchema.SchemaData, properties)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +341,7 @@ func newPartitionConsumer(parent Consumer, client *client, options *partitionCon
 		compressionProviders: sync.Map{},
 		dlq:                  dlq,
 		metrics:              metrics,
-		schemaInfoCache:      newSchemaInfoCache(client, options.topic),
+		schemaRegistry:       newSchemaInfoCache(client, options.topic, options.schemaCreator),
 	}
 	if pc.options.autoReceiverQueueSize {
 		pc.currentQueueSize.Store(initialReceiverQueueSize)
@@ -1223,7 +1226,7 @@ func (pc *partitionConsumer) MessageReceived(response *pb.CommandMessage, header
 				replicatedFrom:      msgMeta.GetReplicatedFrom(),
 				redeliveryCount:     response.GetRedeliveryCount(),
 				schemaVersion:       msgMeta.GetSchemaVersion(),
-				schemaInfoCache:     pc.schemaInfoCache,
+				schemaRegistry:      pc.schemaRegistry,
 				orderingKey:         string(smm.OrderingKey),
 				index:               messageIndex,
 				brokerPublishTime:   brokerPublishTime,
@@ -1243,7 +1246,7 @@ func (pc *partitionConsumer) MessageReceived(response *pb.CommandMessage, header
 				replicatedFrom:      msgMeta.GetReplicatedFrom(),
 				redeliveryCount:     response.GetRedeliveryCount(),
 				schemaVersion:       msgMeta.GetSchemaVersion(),
-				schemaInfoCache:     pc.schemaInfoCache,
+				schemaRegistry:      pc.schemaRegistry,
 				orderingKey:         string(msgMeta.GetOrderingKey()),
 				index:               messageIndex,
 				brokerPublishTime:   brokerPublishTime,
