@@ -16,7 +16,7 @@
 # under the License.
 
 name: CI
-on: [pull_request]
+on: [pull_request, workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-latest
